@@ -1,0 +1,12 @@
+# 밤새 크롤링 정책
+
+User-agent: *
+Disallow: /cancel
+Disallow: /cancel/
+Disallow: /report
+Disallow: /verify
+
+Allow: /upgrade
+Allow: /tonight
+Allow: /streak
+Allow: /account
