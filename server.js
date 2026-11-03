@@ -13,7 +13,17 @@ const PUBLIC = path.join(__dirname, 'public');
 const STATIC = ['/style.css', '/night.js', '/robots.txt', '/humans.txt'];
 
 // ── 세션 (메모리) ───────────────────────────────────────────────────
+// 쿠키 없는 요청(크롤러, 스캐너)마다 세션이 생기므로 오래 안 쓴 세션은 지우고 개수도 제한한다.
 const sessions = new Map();
+const SESSION_IDLE_MS = 30 * 60 * 1000;
+const MAX_SESSIONS = 10000;
+
+function sweepSessions(now = Date.now()) {
+  for (const [sid, s] of sessions) {
+    if (now - s.lastSeen > SESSION_IDLE_MS) sessions.delete(sid);
+  }
+}
+setInterval(sweepSessions, 5 * 60 * 1000).unref();
 
 function newSession() {
   return {
@@ -42,11 +52,17 @@ function getSession(req, res) {
   );
   let sid = cookies.sid;
   if (!sid || !sessions.has(sid)) {
+    if (sessions.size >= MAX_SESSIONS) {
+      // Map은 삽입 순서를 지키므로 첫 항목이 가장 오래 전에 만들어진 세션이다.
+      sessions.delete(sessions.keys().next().value);
+    }
     sid = crypto.randomBytes(12).toString('hex');
     sessions.set(sid, newSession());
     res.setHeader('Set-Cookie', `sid=${sid}; Path=/; HttpOnly; SameSite=Lax`);
   }
-  return sessions.get(sid);
+  const s = sessions.get(sid);
+  s.lastSeen = Date.now();
+  return s;
 }
 
 function hit(s, code) {
@@ -83,7 +99,11 @@ function serveStatic(res, name) {
 function readBody(req, limit = 8192) {
   return new Promise((resolve) => {
     let raw = '';
-    req.on('data', (c) => { raw += c; if (raw.length > limit) req.destroy(); });
+    req.on('data', (c) => {
+      raw += c;
+      // destroy 뒤에는 end도 error도 오지 않으므로 먼저 resolve해야 요청이 매달리지 않는다.
+      if (raw.length > limit) { resolve({}); req.destroy(); }
+    });
     req.on('end', () => {
       try { resolve(JSON.parse(raw)); } catch { resolve({}); }
     });
@@ -95,7 +115,19 @@ const NUM = ['dwell', 'scroll', 'mouse', 'blur', 'breaks', 'refusals', 'back', '
 
 // ── 라우터 ──────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
+  try {
+    await route(req, res);
+  } catch (err) {
+    // 핸들러 예외가 unhandled rejection으로 프로세스를 죽이지 않게 한다.
+    console.error(err);
+    if (!res.headersSent) res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('잠시 후 다시 시도해 주세요.');
+  }
+});
+
+async function route(req, res) {
+  // Host 헤더는 경로 해석에 필요 없다. 헤더 값을 base로 쓰면 'Host: a b' 하나로 URL 파싱이 터진다.
+  const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
 
   if (STATIC.includes(p) && serveStatic(res, p.slice(1))) return;
@@ -194,7 +226,7 @@ const server = http.createServer(async (req, res) => {
 <div class="cta"><a class="btn ghost" href="/">홈으로</a></div>
 `, { nav: false }), 404);
   }
-});
+}
 
 server.listen(PORT, () => {
   console.log(`\n  ☾ 밤새 → http://localhost:${PORT}\n`);
