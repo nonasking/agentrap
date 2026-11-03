@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check
+        run: |
+          node --check server.js
+          for f in lib/*.js public/*.js; do node --check "$f"; done
+      - name: Smoke test
+        # 의존성 없는 서버라 띄워 놓고 몇 가지 요청만 확인한다.
+        run: |
+          PORT=4747 node server.js > server.log 2>&1 &
+          SERVER=$!
+          for i in $(seq 1 20); do curl -fs -o /dev/null http://127.0.0.1:4747/ && break; sleep 0.5; done
+          status() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
+          test "$(status http://127.0.0.1:4747/)" = 200
+          test "$(status http://127.0.0.1:4747/robots.txt)" = 200
+          test "$(status http://127.0.0.1:4747/does-not-exist)" = 404
+          # 잘못된 Host 헤더에도 프로세스가 죽지 않아야 한다.
+          status -H "Host: a b" http://127.0.0.1:4747/ > /dev/null || true
+          test "$(status http://127.0.0.1:4747/)" = 200
+          kill "$SERVER"
+          cat server.log
